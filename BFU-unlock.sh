@@ -65,12 +65,12 @@ if [ -n "$IS_LOCKED" ]; then
 
         # キーを押す
         press_key "$char"
-        echo "-- PASS input $i"
 
-        # 取りこぼし防止のウェイト (0.1秒)
-        sleep 0.1
+        # 取りこぼし防止のウェイト (50ms)
+        sleep 0.05
 
         i=$((i + 1))
+        echo "-- PASS input $i"
     done
 
     input keyevent 66 # Enter
