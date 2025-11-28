@@ -45,7 +45,9 @@ if [ -n "$IS_LOCKED" ]; then
     fi
 
     # スワイプ
+    echo "PASS START..."
     input swipe 360 1000 360 200 500
+    echo "- PASS START OK"
     sleep 1
 
     # 輝度調整
@@ -56,12 +58,14 @@ if [ -n "$IS_LOCKED" ]; then
     i=0
 
     # ループで1文字ずつ処理
+    echo "PASS input..."
     while [ $i -lt $len ]; do
         # i番目の文字を取り出す
         char=${PIN:$i:1}
 
         # キーを押す
         press_key "$char"
+        echo "-- PASS input $i"
 
         # 取りこぼし防止のウェイト (0.1秒)
         sleep 0.1

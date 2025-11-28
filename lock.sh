@@ -14,4 +14,5 @@ settings put system screen_brightness 30
 else
     echo "- Already OFF (Skip)"
 fi
+echo "END"
 exit 0
