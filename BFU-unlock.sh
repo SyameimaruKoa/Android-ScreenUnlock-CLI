@@ -44,6 +44,7 @@ if [ -n "$IS_LOCKED" ]; then
         exit 1
     fi
 
+    input keyevent 224
     # スワイプ
     echo "PASS START..."
     input swipe 360 1000 360 200 500

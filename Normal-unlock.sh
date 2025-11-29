@@ -22,6 +22,8 @@ if [ -n "$IS_LOCKED" ]; then
         exit 1
     fi
     
+    input keyevent 224
+    
     settings put system screen_brightness 0
     echo "PASS START..."
     # メニューキーで解除画面呼び出し
