@@ -62,7 +62,19 @@ APatchはマネージャーのモジュール画面からZIPを導入する。Ke
 
 成功したワークフローの **Artifacts** に `Android-Lock-CLI-<実行番号>` が生成される。これを取得・展開すると、`module.prop` のバージョンに基づく **インストール用モジュールZIP** (`Android-Lock-CLI-v1.0.0.zip` など) とSHA-256チェックサム (`.sha256`) が入っている。Artifactsの保存期間は90日じゃ。
 
-Actions画面の **Run workflow** から手動実行することもできる。なお、このワークフローはGitHub Releaseへの自動公開は行わない。
+Actions画面の **Run workflow** から手動実行することもできる。
+
+### GitHub Releasesへの自動公開
+
+`main` ブランチへのコード変更Push、または`main`上での手動実行で、Actionsのビルドが成功すると、生成されたモジュールZIPとSHA-256チェックサムが[Releases](https://github.com/SyameimaruKoa/Android-ScreenUnlock-CLI/releases/latest)にも自動公開される。Pull Requestやドキュメントのみの更新ではReleaseへ公開しない。
+
+- `module.prop` の `version=`（例：`v1.0.0`）をGitタグ・リリース名に利用する。
+- 同じバージョンがすでに公開されている場合、新しいリリースを増やさずZIPとチェックサムを**差し替える**。
+- 新しいバージョンになった場合は、そのバージョンのリリースを新規作成する。
+- 新規・更新したリリースにGitHubの **Latest** 表示を付ける。
+- Androidへの導入にはRelease Assetsの **`Android-Lock-CLI-vX.Y.Z.zip`** を直接使う。ActionsのArtifactsとは違い二重ZIPではない。
+
+**注意:** 同じバージョンのファイルを後から差し替える運用じゃ。公開済みバージョンを厳密に固定したい場合は、コードを変更するときに`module.prop` のバージョンも更新するのじゃ。リポジトリでImmutable Releasesを有効にしている場合、既存Releaseのファイル差し替えはできないため、毎回バージョン更新が必要。
 
 ### GitHubリポジトリからモジュールZIPを作る
 
