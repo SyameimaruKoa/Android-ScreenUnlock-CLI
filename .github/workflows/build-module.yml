@@ -143,7 +143,89 @@ jobs:
                       echo ''
                       echo "Generated: `$ZIP_FILE`"
                       echo ''
-                      echo 'Download the artifact from this workflow run and extract the module ZIP before installing it.'
+                      echo 'The module ZIP is included in the artifact. On main branch pushes and manual main builds it is also published to GitHub Releases.'
                       echo ''
                       echo 'Documentation-only changes do not start an automatic build.'
+                  } >> "$GITHUB_STEP_SUMMARY"
+
+    publish_release:
+        name: Publish GitHub Release
+        needs: build
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: write
+        concurrency:
+            group: android-lock-cli-release
+            cancel-in-progress: false
+
+        steps:
+            - name: Check out module metadata
+              uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+
+            - name: Download generated module ZIP
+              uses: actions/download-artifact@v4
+              with:
+                  name: Android-Lock-CLI-${{ github.run_number }}
+                  path: dist
+
+            - name: Publish or update versioned release
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}
+              run: |
+                  set -euo pipefail
+
+                  version="$(sed -n 's/^version=//p' module.prop | head -n 1 | tr -d '\r')"
+                  if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]]; then
+                      echo "::error::Expected version=vMAJOR.MINOR.PATCH in module.prop, got: $version"
+                      exit 1
+                  fi
+
+                  zip_file="dist/Android-Lock-CLI-${version}.zip"
+                  checksum_file="${zip_file}.sha256"
+
+                  test -s "$zip_file"
+                  test -s "$checksum_file"
+                  (cd dist && sha256sum -c "$(basename "$checksum_file")")
+
+                  notes="$(cat <<'NOTES'
+                  Android Lock CLI — Magisk / KernelSU / APatch 対応モジュール
+
+                  - Android 9–16 向けのロック・PIN入力コマンド
+                  - CLI: lockctl / BFU-unlock.sh / Normal-unlock.sh / lock.sh
+                  - ZIPを直接Magisk・KernelSU・APatchのモジュール画面でインストール
+                  - APKではなく、添付の Android-Lock-CLI-*.zip をダウンロードすること
+                  - Android 16は実機での動作保証なし
+                  - SHA-256検証用の .sha256 ファイルを同梱
+                  NOTES
+                  )"
+
+                  if gh release view "$version" >/dev/null 2>&1; then
+                      echo "Updating existing release: $version"
+                      gh release upload "$version" "$zip_file" "$checksum_file" --clobber
+                      gh release edit "$version" --latest
+                  else
+                      echo "Creating release: $version"
+                      gh release create "$version" "$zip_file" "$checksum_file" \
+                          --target "$GITHUB_SHA" \
+                          --title "Android Lock CLI $version" \
+                          --notes "$notes" \
+                          --latest
+                  fi
+
+                  release_url="$(gh release view "$version" --json url --jq .url)"
+                  echo "Published: $release_url"
+                  {
+                      echo '## Published GitHub Release'
+                      echo ''
+                      echo "Release: $release_url"
+                      echo ''
+                      echo "ZIP: $(basename "$zip_file")"
+                      echo ''
+                      echo 'Marked as **Latest**.'
                   } >> "$GITHUB_STEP_SUMMARY"
