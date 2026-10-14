@@ -1,0 +1,149 @@
+name: Build Android Lock CLI module
+
+on:
+    push:
+        branches:
+            - main
+        paths-ignore:
+            - '**/*.md'
+            - '**/*.markdown'
+            - '**/*.rst'
+            - '**/*.adoc'
+            - '**/*.txt'
+            - 'docs/**'
+            - 'documentation/**'
+            - 'LICENSE*'
+            - 'NOTICE*'
+            - 'CHANGELOG*'
+    pull_request:
+        branches:
+            - main
+        paths-ignore:
+            - '**/*.md'
+            - '**/*.markdown'
+            - '**/*.rst'
+            - '**/*.adoc'
+            - '**/*.txt'
+            - 'docs/**'
+            - 'documentation/**'
+            - 'LICENSE*'
+            - 'NOTICE*'
+            - 'CHANGELOG*'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        name: Package module ZIP
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+
+        steps:
+            - name: Check out repository
+              uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+
+            - name: Validate module sources
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  required=(
+                      module.prop
+                      customize.sh
+                      README.md
+                      system/bin/lockctl
+                      system/bin/BFU-unlock.sh
+                      system/bin/Normal-unlock.sh
+                      system/bin/lock.sh
+                      system/bin/bfu-unlock
+                      system/bin/normal-unlock
+                      system/bin/screen-lock
+                  )
+                  for file in "${required[@]}"; do
+                      if [[ ! -f "$file" ]]; then
+                          echo "::error::Missing required module file: $file"
+                          exit 1
+                      fi
+                  done
+
+                  for script in customize.sh system/bin/*; do
+                      bash -n "$script"
+                  done
+                  bash system/bin/lockctl --help | grep -Fq 'lockctl bfu'
+                  grep -Eq '^id=[a-zA-Z0-9_]+$' module.prop
+
+            - name: Build installable module ZIP
+              id: package
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  version="$(sed -n 's/^version=//p' module.prop | head -n 1 | tr -d '\r')"
+                  if [[ ! "$version" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+                      echo "::error::Invalid version in module.prop: $version"
+                      exit 1
+                  fi
+
+                  while IFS= read -r -d '' script; do
+                      chmod 0755 "$script"
+                  done < <(find system/bin -type f -print0)
+                  chmod 0755 customize.sh
+
+                  mkdir -p dist
+                  zip_file="Android-Lock-CLI-${version}.zip"
+                  zip -q -X -r "dist/$zip_file" module.prop customize.sh README.md system
+
+                  unzip -tq "dist/$zip_file"
+                  for required_entry in \
+                      module.prop \
+                      customize.sh \
+                      system/bin/lockctl \
+                      system/bin/BFU-unlock.sh \
+                      system/bin/Normal-unlock.sh \
+                      system/bin/lock.sh; do
+                      if ! unzip -Z1 "dist/$zip_file" | grep -Fxq "$required_entry"; then
+                          echo "::error::Invalid archive layout: $required_entry not found"
+                          exit 1
+                      fi
+                  done
+                  if unzip -Z1 "dist/$zip_file" | grep -Eq '^Android-ScreenUnlock-CLI/|^\.git/'; then
+                      echo "::error::Unexpected parent or Git directory in module ZIP"
+                      exit 1
+                  fi
+                  (
+                      cd dist
+                      sha256sum "$zip_file" > "$zip_file.sha256"
+                  )
+
+                  echo "zip_file=$zip_file" >> "$GITHUB_OUTPUT"
+                  echo "Built: $zip_file"
+
+            - name: Upload module ZIP
+              uses: actions/upload-artifact@v4
+              with:
+                  name: Android-Lock-CLI-${{ github.run_number }}
+                  path: |
+                      dist/*.zip
+                      dist/*.sha256
+                  if-no-files-found: error
+                  retention-days: 90
+                  compression-level: 0
+
+            - name: Build summary
+              shell: bash
+              env:
+                  ZIP_FILE: ${{ steps.package.outputs.zip_file }}
+              run: |
+                  {
+                      echo '## Android Lock CLI module'
+                      echo ''
+                      echo "Generated: `$ZIP_FILE`"
+                      echo ''
+                      echo 'Download the artifact from this workflow run and extract the module ZIP before installing it.'
+                      echo ''
+                      echo 'Documentation-only changes do not start an automatic build.'
+                  } >> "$GITHUB_STEP_SUMMARY"
