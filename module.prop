@@ -1,0 +1,6 @@
+id=android_lock_cli
+name=Android Lock CLI (Android 9-16)
+version=v1.0.0
+versionCode=10000
+author=SyameimaruKoa (original gist) / ChatGPT (module adaptation)
+description=Systemless PIN unlock and screen lock CLI: BFU-unlock.sh, Normal-unlock.sh, lock.sh, lockctl. Compatible with Android 9-16 (device-dependent).
