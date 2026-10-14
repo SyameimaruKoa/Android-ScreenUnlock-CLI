@@ -141,7 +141,7 @@ jobs:
                   {
                       echo '## Android Lock CLI module'
                       echo ''
-                      echo "Generated: `$ZIP_FILE`"
+                      printf 'Generated: %s\n' "$ZIP_FILE"
                       echo ''
                       echo 'The module ZIP is included in the artifact. On main branch pushes and manual main builds it is also published to GitHub Releases.'
                       echo ''
