@@ -1,0 +1,360 @@
+#!/system/bin/sh
+# Android lock control CLI for Magisk / KernelSU / APatch.
+# All unlocking is manual. No PIN is persisted to disk.
+
+show_help() {
+    cat <<'HELP'
+使い方:
+    lockctl bfu [PIN] [--no-brightness] [--gesture auto|swipe|menu|dismiss]
+    lockctl normal [PIN] [--no-brightness] [--gesture auto|swipe|menu|dismiss]
+    lockctl lock [--no-brightness]
+    lockctl status
+    lockctl -h | --help
+
+コマンド:
+    bfu       PINを数字の物理キーイベントとして送信する (元のBFU-unlock.sh)
+    normal    PINをinput textで送信する (元のNormal-unlock.sh)
+    lock      画面を消灯・ロックする (元のlock.sh)
+    status    画面状態とキーロック状態を確認する (PINは不要)
+
+オプション:
+    PIN              省略すると必要時に対話入力 (数字のみ)
+    --no-brightness  従来の輝度変更 (解除時0 / ロック時30) を行わない
+    --gesture auto   cmd window dismiss-keyguardを試して、失敗なら旧方式
+    --gesture swipe  画面解像度に応じたスワイプ (元のBFU方式)
+    --gesture menu   KEYCODE_MENUを送る (元のNormal方式)
+    --gesture dismiss cmd window dismiss-keyguardのみ使用
+    -h, --help       このヘルプを表示する
+
+互換コマンド:
+    BFU-unlock.sh [PIN] [...]       bfu-unlock [PIN] [...]
+    Normal-unlock.sh [PIN] [...]    normal-unlock [PIN] [...]
+    lock.sh [...]                   screen-lock [...]
+
+例:
+    su -c 'lockctl status'
+    su -c 'BFU-unlock.sh'               # 端末上でPINを入力
+    su -c 'lockctl bfu 1234'           # コマンド履歴/プロセス一覧にPINが残る可能性あり
+    su -c 'lockctl normal --gesture swipe'
+    su -c 'lockctl lock --no-brightness'
+
+注意:
+    ・rootまたはADB shellで操作し、端末の画面ロックは通常通り有効のままにする。
+    ・実機のロック画面仕様により、入力の成功は保証できない。
+    ・ロック状態を検出できない場合は、安全のためPINを入力しない。
+HELP
+}
+
+log_error() {
+    printf 'ERROR: %s\n' "$*" >&2
+}
+
+# Always prefer the newer KeyguardController status. Fall back to the Android 9 policy fields.
+keyguard_state() {
+    local dump line
+    dump="$(dumpsys activity activities 2>/dev/null)"
+    line="$(printf '%s\n' "$dump" | grep -m 1 -E '(^|[[:space:]])mKeyguardShowing=(true|false)')"
+    if [ -z "$line" ]; then
+        dump="$(dumpsys window 2>/dev/null)"
+        line="$(printf '%s\n' "$dump" | grep -m 1 -E '(^|[[:space:]])mKeyguardShowing=(true|false)')"
+    fi
+    if [ -n "$line" ]; then
+        case "$line" in
+            *mKeyguardShowing=true*) printf 'locked\n'; return 0 ;;
+            *mKeyguardShowing=false*) printf 'unlocked\n'; return 0 ;;
+        esac
+    fi
+
+    dump="$(dumpsys window policy 2>/dev/null)"
+    line="$(printf '%s\n' "$dump" | grep -m 1 -E '(^|[[:space:]])(isStatusBarKeyguard|mShowingLockscreen|mKeyguardShowing|isKeyguardShowing)=(true|false)')"
+    if [ -n "$line" ]; then
+        case "$line" in
+            *=true*) printf 'locked\n'; return 0 ;;
+            *=false*) printf 'unlocked\n'; return 0 ;;
+        esac
+    fi
+
+    # Modern builds may print KeyguardShowing=... on a per-display status line.
+    dump="$(dumpsys activity activities 2>/dev/null)"
+    line="$(printf '%s\n' "$dump" | grep -m 1 -E '(^|[[:space:]])KeyguardShowing=(true|false)')"
+    if [ -n "$line" ]; then
+        case "$line" in
+            *KeyguardShowing=true*) printf 'locked\n'; return 0 ;;
+            *KeyguardShowing=false*) printf 'unlocked\n'; return 0 ;;
+        esac
+    fi
+    printf 'unknown\n'
+    return 2
+}
+
+screen_state() {
+    local dump
+    dump="$(dumpsys power 2>/dev/null)"
+    case "$dump" in
+        *mWakefulness=Awake*|*mWakefulness=AWAKE*) printf 'on\n' ;;
+        *mWakefulness=Dreaming*|*mWakefulness=DREAMING*) printf 'on\n' ;;
+        *mWakefulness=Asleep*|*mWakefulness=ASLEEP*) printf 'off\n' ;;
+        *mWakefulness=Dozing*|*mWakefulness=DOZING*) printf 'off\n' ;;
+        *) printf 'unknown\n' ;;
+    esac
+}
+
+show_status() {
+    local state screen sdk
+    sdk="$(getprop ro.build.version.sdk 2>/dev/null)"
+    state="$(keyguard_state)"
+    screen="$(screen_state)"
+    printf 'Android API: %s\n' "${sdk:-unknown}"
+    printf 'Screen: %s\n' "$screen"
+    printf 'Keyguard: %s\n' "$state"
+    [ "$state" != unknown ]
+}
+
+press_key() {
+    local code
+    case "$1" in
+        0) code=7 ;;
+        1) code=8 ;;
+        2) code=9 ;;
+        3) code=10 ;;
+        4) code=11 ;;
+        5) code=12 ;;
+        6) code=13 ;;
+        7) code=14 ;;
+        8) code=15 ;;
+        9) code=16 ;;
+        *) return 1 ;;
+    esac
+    input keyevent "$code"
+}
+
+prompt_pin() {
+    local tty_masked
+    tty_masked=0
+    printf 'PIN (数字のみ): ' >&2
+    if [ -t 0 ] && command -v stty >/dev/null 2>&1; then
+        if stty -echo 2>/dev/null; then
+            tty_masked=1
+            trap 'stty echo 2>/dev/null' 0
+        fi
+    fi
+    IFS= read -r PIN || PIN=''
+    if [ "$tty_masked" -eq 1 ]; then
+        stty echo 2>/dev/null
+        trap - 0
+        printf '\n' >&2
+    fi
+}
+
+# Use the actual display dimensions, not Rakuten Mini-specific hard-coded coordinates.
+swipe_up() {
+    local size width height x y_start y_end
+    size="$(wm size 2>/dev/null | grep -E 'size: [0-9]+x[0-9]+' | tail -n 1)"
+    size="${size##*size: }"
+    case "$size" in
+        *x*)
+            width="${size%x*}"
+            height="${size#*x}"
+            ;;
+        *)
+            log_error '画面解像度を取得できないため、スワイプできない。--gesture dismissを試すのじゃ。'
+            return 1
+            ;;
+    esac
+    case "$width:$height" in
+        *[!0-9:]*|:*|*:) return 1 ;;
+    esac
+    [ "$width" -gt 0 ] && [ "$height" -gt 0 ] || return 1
+    x=$((width / 2))
+    y_start=$((height * 80 / 100))
+    y_end=$((height * 20 / 100))
+    input swipe "$x" "$y_start" "$x" "$y_end" 350
+}
+
+open_pin_screen() {
+    local method gesture
+    method="$1"
+    gesture="$2"
+    case "$gesture" in
+        auto)
+            if cmd window dismiss-keyguard >/dev/null 2>&1; then
+                return 0
+            fi
+            if [ "$method" = bfu ]; then
+                swipe_up
+            else
+                input keyevent 82
+            fi
+            ;;
+        swipe) swipe_up ;;
+        menu) input keyevent 82 ;;
+        dismiss) cmd window dismiss-keyguard ;;
+        *) return 1 ;;
+    esac
+}
+
+confirm_unlock() {
+    local i state
+    i=0
+    while [ "$i" -lt 5 ]; do
+        sleep 1
+        state="$(keyguard_state)"
+        if [ "$state" = unlocked ]; then
+            printf 'Unlocked.\n'
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    if [ "$state" = unknown ]; then
+        log_error 'PIN送信後のロック状態を判定できない。端末を確認するのじゃ。'
+        return 2
+    fi
+    log_error 'ロック解除を確認できなかった。PINや入力方式を確認するのじゃ。'
+    return 1
+}
+
+unlock_device() {
+    local method pin gesture state remaining digit index
+    method="$1"
+    shift
+    pin=''
+    gesture=auto
+    CHANGE_BRIGHTNESS=1
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -h|--help) show_help; return 0 ;;
+            --no-brightness) CHANGE_BRIGHTNESS=0 ;;
+            --gesture)
+                shift
+                if [ "$#" -eq 0 ]; then
+                    log_error '--gestureには引数が必要じゃ。'
+                    return 2
+                fi
+                case "$1" in
+                    auto|swipe|menu|dismiss) gesture="$1" ;;
+                    *) log_error "未対応のgesture: $1"; return 2 ;;
+                esac
+                ;;
+            --*) log_error "不明なオプション: $1"; return 2 ;;
+            *)
+                if [ -n "$pin" ]; then
+                    log_error 'PINは1個しか指定できぬ。'
+                    return 2
+                fi
+                pin="$1"
+                ;;
+        esac
+        shift
+    done
+
+    printf 'Wake up...\n'
+    input keyevent 224 || return 1
+    sleep 1
+    state="$(keyguard_state)"
+    case "$state" in
+        unlocked)
+            printf 'Already unlocked (skip).\n'
+            return 0
+            ;;
+        unknown)
+            log_error 'ロック状態が不明のため、PIN入力を中止した。'
+            return 2
+            ;;
+    esac
+
+    if [ -z "$pin" ]; then
+        prompt_pin
+        pin="$PIN"
+    fi
+    case "$pin" in
+        ''|*[!0-9]*)
+            log_error 'PINには1文字以上の数字 (0～9) だけを指定するのじゃ。'
+            return 2
+            ;;
+    esac
+
+    printf 'Opening PIN screen (%s)...\n' "$gesture"
+    open_pin_screen "$method" "$gesture" || {
+        log_error 'PIN入力画面を開けなかった。--gesture swipe / menu / dismissを試すのじゃ。'
+        return 1
+    }
+    sleep 1
+
+    if [ "$CHANGE_BRIGHTNESS" -eq 1 ]; then
+        settings put system screen_brightness 0 || {
+            printf 'WARNING: 輝度を変更できなかった。続行するぞ。\n' >&2
+        }
+    fi
+
+    printf 'Sending PIN using %s...\n' "$method"
+    if [ "$method" = normal ]; then
+        input text "$pin" || return 1
+    else
+        remaining="$pin"
+        index=0
+        while [ -n "$remaining" ]; do
+            digit="${remaining%"${remaining#?}"}"
+            remaining="${remaining#?}"
+            press_key "$digit" || return 1
+            sleep 0.05
+            index=$((index + 1))
+            printf 'Digit %s sent.\n' "$index"
+        done
+    fi
+    input keyevent 66 || return 1
+    confirm_unlock
+}
+
+lock_device() {
+    local screen
+    CHANGE_BRIGHTNESS=1
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -h|--help) show_help; return 0 ;;
+            --no-brightness) CHANGE_BRIGHTNESS=0 ;;
+            *) log_error "不明な引数: $1"; return 2 ;;
+        esac
+        shift
+    done
+    screen="$(screen_state)"
+    if [ "$screen" = off ]; then
+        printf 'Screen already off (skip).\n'
+        return 0
+    fi
+    if [ "$CHANGE_BRIGHTNESS" -eq 1 ] && [ "$screen" = on ]; then
+        settings put system screen_brightness 30 || {
+            printf 'WARNING: 輝度を変更できなかった。続行するぞ。\n' >&2
+        }
+    fi
+    # KEYCODE_SLEEP is idempotent; POWER would incorrectly wake a sleeping device.
+    input keyevent 223 || return 1
+    printf 'Sleep key sent.\n'
+}
+
+case "${1:-}" in
+    -h|--help|'') show_help; exit 0 ;;
+    bfu|normal)
+        MODE="$1"
+        shift
+        unlock_device "$MODE" "$@"
+        exit $?
+        ;;
+    lock)
+        shift
+        lock_device "$@"
+        exit $?
+        ;;
+    status)
+        shift
+        case "${1:-}" in
+            -h|--help) show_help; exit 0 ;;
+            '') show_status; exit $? ;;
+            *) log_error "不明な引数: $1"; exit 2 ;;
+        esac
+        ;;
+    *)
+        log_error "不明なコマンド: $1"
+        show_help >&2
+        exit 2
+        ;;
+esac
