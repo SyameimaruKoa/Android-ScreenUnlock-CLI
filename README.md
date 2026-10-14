@@ -56,6 +56,14 @@ adb reboot
 
 APatchはマネージャーのモジュール画面からZIPを導入する。KernelSU / APatchでPATHに現れない場合は、メタモジュールによるsystemマウントが有効か確認する。
 
+### GitHub Actionsによる自動ビルド
+
+`main`へのPushまたは`main`向けPull Requestで、ドキュメント以外のファイルが変更されると、[Build Android Lock CLI module](https://github.com/SyameimaruKoa/Android-ScreenUnlock-CLI/actions/workflows/build-module.yml) が自動実行される。README・Markdown・`docs/` など、ドキュメントのみの変更では自動実行されない。
+
+成功したワークフローの **Artifacts** に `Android-Lock-CLI-<実行番号>` が生成される。これを取得・展開すると、`module.prop` のバージョンに基づく **インストール用モジュールZIP** (`Android-Lock-CLI-v1.0.0.zip` など) とSHA-256チェックサム (`.sha256`) が入っている。Artifactsの保存期間は90日じゃ。
+
+Actions画面の **Run workflow** から手動実行することもできる。なお、このワークフローはGitHub Releaseへの自動公開は行わない。
+
 ### GitHubリポジトリからモジュールZIPを作る
 
 リポジトリ直下にある元の3本のスクリプトは履歴と互換性のため残している。モジュールZIPを作るときは、モジュールに必要なファイルだけをZIPのルートに配置する。
